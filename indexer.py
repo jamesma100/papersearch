@@ -2,7 +2,7 @@ from pypdf import PdfReader
 from pypdf.errors import PdfStreamError
 import os
 import sys
-
+import math
 
 class Lexer:
     def __init__(self, content):
@@ -48,27 +48,44 @@ def build_index(filepath):
             index[token] = index.get(token, 0) + 1
     return index
 
-# tf-idf
-def build_global_index(indexes):
-    print("DEBUG: building global index")
+def tf_from_file(filepath):
+    try:
+        reader = PdfReader(filepath)
+    except PdfStreamError:
+        return None
+    index = {}
+    for page in reader.pages:
+        content = page.extract_text()
+        lexer = Lexer(content)
+        for token in lexer.next_token():
+            index[token] = index.get(token, 0) + 1
+    total = sum(index.values())
+    for key in index:
+        index[key] /= total
+    return index
+
+def build_global_index(index):
+    print("INFO: building global index")
     global_index = {}
-    for index in indexes.values():
-        for key, val in index.items():
+    for tf_table in index.values():
+        for key, val in tf_table.items():
             global_index[key] = global_index.get(key, 0) + 1
     return global_index
 
-def reassign_weights(indexes, global_index):
-    print("DEBUG: reassigning weights")
-    for file in indexes.keys():
-        index = indexes[file]
-        for key in index.keys():
+# tf-idf
+def reassign_weights(index, global_index, num_documents):
+    print("INFO: calculating tf-idf for index")
+    for file in index.keys():
+        tf_table = index[file]
+        for key in tf_table.keys():
             if key in global_index:
-                index[key] = index[key] // global_index[key]
-        indexes[file] = index
+                tf_table[key] = tf_table[key] * math.log(num_documents / global_index[key])
+        index[file] = tf_table
 
 
 def main():
-    indexes = {}
+    index = {}
+    num_documents = 0
 
     for root, subdir, files in os.walk("./papers-we-love", topdown=False):
         for file in files:
@@ -78,18 +95,19 @@ def main():
                 continue
             if not filepath.endswith(".pdf"):
                 continue
-            index = build_index(filepath)
-            if not index:
+            num_documents += 1
+            tf_table = tf_from_file(filepath)
+            if not tf_table:
                 print("ERROR: cannot read pdf stream for: ", file)
             else:
-                indexes[file] = index
+                index[file] = tf_table
 
-    global_index = build_global_index(indexes)
-    reassign_weights(indexes, global_index)
-    for filepath, index in indexes.items():
+    global_index = build_global_index(index)
+    reassign_weights(index, global_index, num_documents)
+    for filepath, tf_table in index.items():
         print(f"{filepath}:")
-        for i in top_n(index, 10):
-            print(f"    {i}")
+        for i, j in top_n(tf_table, 10):
+            print(f"    {i}: {round(j, 3)}")
     
 if __name__ == "__main__":
     main()
