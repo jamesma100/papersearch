@@ -1,8 +1,10 @@
 import argparse
 from pypdf import PdfReader
 from pypdf.errors import PdfStreamError
+from multiprocessing import Pool
 import os
 import sys
+import time
 import math
 
 
@@ -69,12 +71,38 @@ def tf_from_file(filepath):
     return index
 
 
-def build_local_index(repo_path, max_size_in_bytes):
+def tfs_from_files(filepaths):
+    """Takes in list of filepaths, return list of
+    tuples in the form (filename, tf hashmap)
+    """
+
+    def basename(filepath):
+        return filepath.split("/")[-1]
+
+    res = []
+    for filepath in filepaths:
+        res.append((basename(filepath), tf_from_file(filepath)))
+    return res
+
+
+def build_local_index(repo_path, max_size_in_bytes, process_cnt):
     """Parse all documents, calls `tf_from_file()` for each document,
     and return an index mapping filepath to its "local" tf hashmap
     """
+
+    def split_task(filepaths, process_cnt):
+        divider = len(filepaths) // process_cnt
+        tasks = []
+        for i in range(process_cnt):
+            start = i * divider
+            end = start + divider
+            tasks.append(filepaths[start:end])
+        tasks[-1].extend(filepaths[end:])
+        return tasks
+
     print(f"INFO: parsing documents...")
     index = {}
+    filepaths = []
     for root, subdir, files in os.walk(repo_path, topdown=False):
         for file in files:
             filepath = os.path.join(root, file)
@@ -82,11 +110,15 @@ def build_local_index(repo_path, max_size_in_bytes):
                 continue
             if not filepath.endswith(".pdf"):
                 continue
-            tf_table = tf_from_file(filepath)
-            if not tf_table:
-                print("ERROR: cannot read pdf stream for: ", file)
-            else:
-                index[file] = tf_table
+            filepaths.append(filepath)
+
+    tasks = split_task(filepaths, process_cnt)
+    with Pool(process_cnt) as pool:
+        res = pool.map(tfs_from_files, tasks)
+    for item in res:
+        for file, tf in item:
+            index[file] = tf
+
     print(f"INFO: number of documents indexed: {len(index)}")
     return index
 
@@ -133,15 +165,16 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-s", dest="max_size", type=str, action="store")
     parser.add_argument("-r", dest="max_results", type=int, action="store")
+    parser.add_argument("-p", dest="process_cnt", type=int, action="store", default=1)
     parser.add_argument("prompt", nargs="+", action="store")
     return parser.parse_args()
 
 
 def get_num_bytes(max_size):
     try:
-        num, base = int(max_size[:-1]), max_size[-1]
+        num, base = float(max_size[:-1]), max_size[-1]
     except ValueError:
-        print("ERROR: bad size: {max_size}")
+        print(f"ERROR: bad size: {max_size}")
         sys.exit(1)
     if base == "B":
         base = 1
@@ -152,7 +185,7 @@ def get_num_bytes(max_size):
     elif base == "G":
         base = 2**30
     else:
-        raise ValueError("ERROR: bad size: {max_size}")
+        raise ValueError(f"ERROR: bad size: {max_size}")
     return num * base
 
 
@@ -160,11 +193,12 @@ def main():
     args = parse_args()
     max_size_in_bytes = get_num_bytes(args.max_size)
 
-    print(f"INFO: skipping documents over: {max_size_in_bytes}B")
+    print(f"INFO: skipping documents over: {max_size_in_bytes} bytes")
     print(f"INFO: received prompt: {args.prompt}")
+    print(f"INFO: number of processes to start: {args.process_cnt}")
 
     prompt = [word.upper() for word in args.prompt]
-    index = build_local_index("./papers-we-love", max_size_in_bytes)
+    index = build_local_index("./papers-we-love", max_size_in_bytes, args.process_cnt)
     global_index = build_global_index(index)
     reassign_weights(index, global_index)
     results = get_results(index, prompt, args.max_results)
