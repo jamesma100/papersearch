@@ -163,9 +163,9 @@ def reassign_weights(index, global_index):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-s", dest="max_size", type=str, action="store")
-    parser.add_argument("-r", dest="max_results", type=int, action="store")
-    parser.add_argument("-p", dest="process_cnt", type=int, action="store", default=1)
+    parser.add_argument("-s", dest="max_size", type=str, action="store", default="400K")
+    parser.add_argument("-r", dest="max_results", type=int, action="store", default=10)
+    parser.add_argument("-p", dest="process_cnt", type=int, action="store", default=4)
     parser.add_argument("prompt", nargs="+", action="store")
     return parser.parse_args()
 
@@ -188,24 +188,31 @@ def get_num_bytes(max_size):
         raise ValueError(f"ERROR: bad size: {max_size}")
     return num * base
 
+def run_entrypoint(max_size, max_results, process_cnt, prompt):
+    max_size_in_bytes = get_num_bytes(max_size)
+    print(f"INFO: skipping documents over: {max_size_in_bytes} bytes")
+    print(f"INFO: received prompt: {prompt}")
+    print(f"INFO: number of processes to start: {process_cnt}")
+
+    prompt = [word.upper() for word in prompt]
+    index = build_local_index("./papers-we-love", max_size_in_bytes, process_cnt)
+    global_index = build_global_index(index)
+    reassign_weights(index, global_index)
+    results = get_results(index, prompt, max_results)
+
+    return results
+
+def build_response(results, prompt):
+    response = f"RESULT: top {len(results)} results for prompt: {' '.join(prompt)}\n"
+    for i, j in enumerate(results, 1):
+        response += f"{i}. {j[0]}: {round(j[1], 4)}\n"
+    return response
+
 
 def main():
     args = parse_args()
-    max_size_in_bytes = get_num_bytes(args.max_size)
-
-    print(f"INFO: skipping documents over: {max_size_in_bytes} bytes")
-    print(f"INFO: received prompt: {args.prompt}")
-    print(f"INFO: number of processes to start: {args.process_cnt}")
-
-    prompt = [word.upper() for word in args.prompt]
-    index = build_local_index("./papers-we-love", max_size_in_bytes, args.process_cnt)
-    global_index = build_global_index(index)
-    reassign_weights(index, global_index)
-    results = get_results(index, prompt, args.max_results)
-
-    print(f"RESULT: top {args.max_results} results for prompt: {' '.join(prompt)}")
-    for i, j in enumerate(results[: args.max_results], 1):
-        print(f"{i}. {j[0]}: {round(j[1], 4)}")
+    results = run_entrypoint(args.max_size, args.max_results, args.process_cnt, args.prompt)
+    print(build_response(results, args.prompt))
 
 
 if __name__ == "__main__":
